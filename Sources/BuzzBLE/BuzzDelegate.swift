@@ -19,6 +19,7 @@ public protocol BuzzDelegate: class {
    func buzz(_ buzz: Buzz, unknownCommand command: String)
    func buzz(_ buzz: Buzz, badRequestFor command: Buzz.Command, errorMessage: String?)
    func buzz(_ buzz: Buzz, failedToParse responseMessage: String, forCommand command: Buzz.Command)
+   func buzz(_ buzz: Buzz, buttonPressed: Buzz.ButtonPressedInfo)
 }
 
 public extension BuzzDelegate {
@@ -43,4 +44,6 @@ public extension BuzzDelegate {
    func buzz(_ buzz: Buzz, badRequestFor command: Buzz.Command, errorMessage: String?) {}
 
    func buzz(_ buzz: Buzz, failedToParse responseMessage: String, forCommand command: Buzz.Command) {}
+    
+   func buzz(_ buzz: Buzz, buttonPressed: Buzz.ButtonPressedInfo){}
 }

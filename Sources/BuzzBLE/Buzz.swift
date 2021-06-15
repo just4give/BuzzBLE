@@ -26,6 +26,8 @@ public class Buzz: ManageableUARTDevice {
       case disableMotors = "motors stop\n"
       case clearMotorsQueue = "motors clear_queue\n"
       case vibrateMotors = "motors vibrate\n"
+      case turnLeds = "leds set\n"
+      case buttonConfig = "config set_buttons_response\n"
 
       public var description: String {
          self.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -91,7 +93,15 @@ public class Buzz: ManageableUARTDevice {
    public func requestDeviceInfo() {
       sendCommand(Buzz.Command.deviceInfo)
    }
+    
+    public func enableButtonResponse(){
+        sendButtonConfigCommands(data: "1 0")
+    }
 
+    public func disableButtonResponse(){
+        sendButtonConfigCommands(data: "0 0")
+    }
+    
    public func enableMic() {
       setMicEnabled(true)
    }
@@ -119,6 +129,7 @@ public class Buzz: ManageableUARTDevice {
 
    public func setMotorVibration(_ motor0: UInt8, _ motor1: UInt8, _ motor2: UInt8, _ motor3: UInt8) {
       sendMotorsCommand(data: [motor0, motor1, motor2, motor3])
+      
    }
 
    // TODO: Make this not crap.  Add array size check, value bounds checks, etc.  Also other methods for sending
@@ -129,10 +140,22 @@ public class Buzz: ManageableUARTDevice {
       writeWithoutResponse(bytes: Array(command.utf8))
    }
 
+    public func sendLEDCommands(data: String){
+        let command = Buzz.Command.turnLeds.description + " " + data + Buzz.Command.commandTerminator
+        writeWithoutResponse(bytes: Array(command.utf8))
+
+    }
+    
+    public func sendButtonConfigCommands(data: String){
+        let command = Buzz.Command.buttonConfig.description + " " + data + Buzz.Command.commandTerminator
+        writeWithoutResponse(bytes: Array(command.utf8))
+    }
+    
    @discardableResult
    public func sendCommand(_ command: Command) -> Bool {
       return writeWithoutResponse(bytes: command.bytes)
    }
+    
 
    @discardableResult
    public func writeWithResponse(bytes: [UInt8]) -> Bool {
@@ -171,6 +194,8 @@ extension Buzz: BLEPeripheralDelegate {
    }
 
    public func blePeripheral(_ peripheral: BLEPeripheral, didUpdateValueFor characteristicUUID: CBUUID, value: Data?, error: Error?) {
+      
+    
       if let error = error {
          os_log("BLEPeripheralDelegate.didUpdateValueFor uuid=%s, error=%s", log: OSLog.log, type: .error, characteristicUUID.uuidString, String(describing: error))
          delegate?.buzz(self, responseError: error)
@@ -180,7 +205,7 @@ extension Buzz: BLEPeripheralDelegate {
          guard characteristicUUID == UARTDeviceServicesAndCharacteristics.rxUUID else {
             fatalError("Received didUpdateValueFor unexpected characteristic \(characteristicUUID)")
          }
-
+        
          // ignore empty response
          guard let responseData = value, !responseData.isEmpty else {
             os_log("BLEPeripheralDelegate.didUpdateValueFor ignoring empty response for uuid=%s", log: OSLog.log, type: .debug, characteristicUUID.uuidString)
@@ -189,6 +214,7 @@ extension Buzz: BLEPeripheralDelegate {
 
          // os_log("BLEPeripheralDelegate.didUpdateValueFor uuid=%s, value=%s", log: OSLog.log, type: .debug, characteristicUUID.uuidString, String(describing: value))
 
+        
          // convert the response data to a string, then hand it off to the response processor
          let responseStr = String(decoding: responseData, as: UTF8.self)
          responseProcessor.process(response: responseStr)
@@ -210,6 +236,23 @@ extension Buzz: BuzzResponseProcessorDelegate {
       delegate?.buzz(self, unknownCommand: command)
    }
 
+    func handleUnsolicitedResponse(message: String){
+        let jsonData = Data(message.utf8)
+        let decoder = JSONDecoder()
+        
+        do {
+            //print("Process unsolicited response \(message)")
+            let responseMessage = try decoder.decode(Buzz.ResponseMessage.self, from: jsonData)
+            if responseMessage.type == "button_press"{
+                
+                let buttonPressed = try decoder.decode(Buzz.ButtonPressedInfo.self, from: jsonData)
+                
+                delegate?.buzz(self, buttonPressed: buttonPressed)
+            }
+        } catch  {
+            print("Error processing unsolicited response")
+        }
+    }
    // response = command + message
    func handleResponseMessage(message: String, forCommand command: Command) {
       let jsonData = Data(message.utf8)
@@ -217,7 +260,7 @@ extension Buzz: BuzzResponseProcessorDelegate {
 
       do {
          let responseMessage = try decoder.decode(Buzz.ResponseMessage.self, from: jsonData)
-
+         
          // handle bad request for commands other than the two which deal with authorization
          if responseMessage.isBadRequest && command != .authAsDeveloper && command != .accept {
             delegate?.buzz(self, badRequestFor: command, errorMessage: responseMessage.message)
@@ -268,6 +311,10 @@ extension Buzz: BuzzResponseProcessorDelegate {
                delegate?.buzz(self, isMotorsQueueCleared: true)
             case .vibrateMotors:
                fatalError("Unsupported command \(command)")
+            case .turnLeds:
+                print("LED response")
+            case .buttonConfig:
+                print("buttonConfig")
          }
       }
       catch {
@@ -281,21 +328,28 @@ extension Buzz {
       enum StatusCode: Int, Decodable {
          case ok = 200
          case badRequest = 400
+         case created = 201
       }
 
       private enum CodingKeys: String, CodingKey {
          case code = "status_code"
          case message
+         case type
       }
 
       let code: StatusCode
       let message: String?
+      let type: String?
+    
       var isOK: Bool {
          code == .ok
       }
       var isBadRequest: Bool {
          code == .badRequest
       }
+     var isCreated: Bool {
+       code == .created
+    }
    }
 
    public struct BatteryInfo: Decodable {
@@ -317,6 +371,25 @@ extension Buzz {
          level = try dataContainer.decode(Percentage.self, forKey: .level)
       }
    }
+    
+    public struct ButtonPressedInfo: Decodable {
+       
+       private enum RootKeys: String, CodingKey {
+          case data
+       }
+
+       private enum BatteryKeys: String, CodingKey {
+          case val = "button_val"
+       }
+
+       public let val: Int
+
+       public init(from decoder: Decoder) throws {
+          let container = try decoder.container(keyedBy: RootKeys.self)
+          let dataContainer = try container.nestedContainer(keyedBy: BatteryKeys.self, forKey: .data)
+          val = try dataContainer.decode(Int.self, forKey: .val)
+       }
+    }
 
    public struct DeviceInfo: Decodable {
       public struct Version: CustomStringConvertible {
